@@ -24,6 +24,7 @@ import os
 import re
 import sys
 import time
+import urllib.error
 import urllib.request
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
@@ -38,10 +39,19 @@ PAGE_SIZE = 20
 WEEKDAYS = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"]
 
 
-def http(url, data=None, headers=None, timeout=30):
+def http(url, data=None, headers=None, timeout=30, attempts=4):
+    #The site drops connections under parallel load; a dropped or timed-out request is retried
+    #with a growing pause, HTTP error statuses are not
     req = urllib.request.Request(url, data=data, headers={"User-Agent": UA, **(headers or {})})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return resp.read().decode("utf-8")
+    for attempt in range(1, attempts + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return resp.read().decode("utf-8")
+        except urllib.error.HTTPError:
+            raise
+        except (urllib.error.URLError, ConnectionError, TimeoutError):
+            if attempt == attempts: raise
+            time.sleep(2 * attempt)
 
 
 def discover(event_url):
@@ -97,7 +107,7 @@ def collect(event_url, dates):
     group_id, action_id = discover(event_url)
     sessions = list_sessions(event_url, group_id, action_id)
     if dates: sessions = [s for s in sessions if s["start"].date() in dates]
-    with ThreadPoolExecutor(max_workers=8) as pool:
+    with ThreadPoolExecutor(max_workers=4) as pool:
         return list(pool.map(count_free, sessions))
 
 
