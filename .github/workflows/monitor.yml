@@ -31,7 +31,7 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python ticketpro_seats.py --once state.json
+        run: python ticketpro_seats.py --once state.json --from 2026-12-20 --to 2027-01-10
 
       - name: Save state
         if: always() && hashFiles('state.json') != ''
