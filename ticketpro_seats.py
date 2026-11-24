@@ -5,6 +5,7 @@
 #  python ticketpro_seats.py <event url>           another group event
 #  python ticketpro_seats.py --watch 300           re-check every 300 s, report when seats appear
 #  python ticketpro_seats.py --date 2026-12-12     only sessions on that date (repeatable)
+#  python ticketpro_seats.py --from 2026-12-20 --to 2027-01-10   only sessions in that range (inclusive)
 #  python ticketpro_seats.py --once state.json     one check for a scheduler, state kept in the file
 #  python ticketpro_seats.py --telegram-test       send a test message to Telegram
 #
@@ -103,10 +104,10 @@ def count_free(session):
     return {**session, "free": free, "total": total, "prices": prices}
 
 
-def collect(event_url, dates):
+def collect(event_url, is_wanted):
     group_id, action_id = discover(event_url)
     sessions = list_sessions(event_url, group_id, action_id)
-    if dates: sessions = [s for s in sessions if s["start"].date() in dates]
+    sessions = [s for s in sessions if is_wanted(s["start"].date())]
     with ThreadPoolExecutor(max_workers=4) as pool:
         return list(pool.map(count_free, sessions))
 
@@ -190,11 +191,11 @@ def process(results, state, min_new, schedule_text):
     return {"previous": free_of, "baseline": baseline}
 
 
-def watch(event_url, dates, interval, min_new):
+def watch(event_url, is_wanted, interval, min_new):
     state = {}
     while True:
         try:
-            results = collect(event_url, dates)
+            results = collect(event_url, is_wanted)
         except Exception as ex:
             print(f"[{dt.datetime.now():%H:%M:%S}] ошибка запроса: {ex}")
             time.sleep(interval)
@@ -203,14 +204,14 @@ def watch(event_url, dates, interval, min_new):
         time.sleep(interval)
 
 
-def check_once(event_url, dates, min_new, state_path):
+def check_once(event_url, is_wanted, min_new, state_path):
     #One check per run for schedulers (GitHub Actions): the state file carries previous/baseline
     #between runs; a missing file means the first run, which only reports the start
     try:
         with open(state_path, encoding="utf-8") as f: state = json.load(f)
     except FileNotFoundError:
         state = {}
-    results = collect(event_url, dates)
+    results = collect(event_url, is_wanted)
     state = process(results, state, min_new, "проверка по расписанию GitHub Actions")
     with open(state_path, "w", encoding="utf-8") as f: json.dump(state, f)
 
@@ -221,26 +222,30 @@ def main():
     ap.add_argument("url", nargs="?", default=DEFAULT_URL, help="страница группового события")
     ap.add_argument("--watch", type=int, metavar="SEC", help="проверять каждые SEC секунд и сообщать о новых местах")
     ap.add_argument("--date", action="append", type=dt.date.fromisoformat, metavar="YYYY-MM-DD", help="только эта дата (можно несколько)")
+    ap.add_argument("--from", dest="date_from", type=dt.date.fromisoformat, metavar="YYYY-MM-DD", help="сеансы начиная с этой даты")
+    ap.add_argument("--to", dest="date_to", type=dt.date.fromisoformat, metavar="YYYY-MM-DD", help="сеансы по эту дату включительно")
     ap.add_argument("--min-new", type=int, default=10, metavar="N", help="писать в Telegram, когда в сеансе прибавилось больше N мест (по умолчанию 10)")
     ap.add_argument("--once", metavar="STATE.json", help="одна проверка с уведомлением; состояние между запусками хранится в файле")
     ap.add_argument("--json", action="store_true", help="вывести результат как JSON")
     ap.add_argument("--telegram-test", action="store_true", help="отправить тестовое сообщение в Telegram и выйти")
     args = ap.parse_args()
-    dates = set(args.date or [])
+    only_dates = set(args.date or [])
+    is_wanted = lambda d: (not only_dates or d in only_dates) \
+        and (args.date_from is None or d >= args.date_from) and (args.date_to is None or d <= args.date_to)
 
     if args.telegram_test:
         print("Отправлено" if telegram_send("Тест: уведомления ticketpro работают") else "Не отправлено: проверьте TELEGRAM_BOT_TOKEN и TELEGRAM_CHAT_ID")
         return
 
     if args.watch:
-        watch(args.url, dates, max(args.watch, 30), args.min_new)
+        watch(args.url, is_wanted, max(args.watch, 30), args.min_new)
         return
 
     if args.once:
-        check_once(args.url, dates, args.min_new, args.once)
+        check_once(args.url, is_wanted, args.min_new, args.once)
         return
 
-    results = collect(args.url, dates)
+    results = collect(args.url, is_wanted)
     if args.json:
         out = [{"externalId": r["id"], "start": r["start"].isoformat(), "free": r.get("free"), "total": r.get("total"),
                 "prices": {str(k): v for k, v in r.get("prices", {}).items()}, "error": r.get("error")} for r in results]
